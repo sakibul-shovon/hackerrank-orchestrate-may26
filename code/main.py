@@ -172,7 +172,7 @@ def load_cache(output_path, tickets):
 
 # ── Agentic process_ticket ─────────────────────────────────────────────────────
 
-def process_ticket(ticket, idx, docs, bm25, embeddings, log_path, verbose=False):
+def process_ticket(ticket, idx, docs, bm25, embeddings, log_path, enable_retrieval=True, enable_rules=True, enable_grounding=True, verbose=False):
     """
     Full agentic triage pipeline:
       Stage 1: Safety filter
@@ -249,8 +249,11 @@ def process_ticket(ticket, idx, docs, bm25, embeddings, log_path, verbose=False)
     add_stage(trace, "domain", {"detected": domain_filter, "source": domain_source})
 
     # ── Stage 3: Retrieve ──────────────────────────────────────────────────────
-    retrieved = hybrid_retrieve(query, docs, bm25, embeddings,
-                                domain_filter=domain_filter, top_k=5)
+    if enable_retrieval:
+        retrieved = hybrid_retrieve(query, docs, bm25, embeddings,
+                                    domain_filter=domain_filter, top_k=5)
+    else:
+        retrieved = []
     top_score = retrieved[0].get("retrieval_score", None) if retrieved else None
     add_stage(trace, "retrieval", {
         "query_preview": query[:60],
@@ -262,20 +265,23 @@ def process_ticket(ticket, idx, docs, bm25, embeddings, log_path, verbose=False)
         print(f"  Docs   : {[d['title'][:25] for d in retrieved]}")
 
     # ── Stage 4: Escalation rules (deterministic) ──────────────────────────────
-    esc_area, esc_req_type, esc_reason = check_escalation_rules(issue)
-    add_stage(trace, "escalation_rules", {"matched": bool(esc_area), "rule": esc_reason})
-    if esc_area:
-        if verbose:
-            print(f"  [RULE]   {esc_reason}")
-        result = {
-            "status": "escalated", "product_area": esc_area,
-            "response": "This case requires attention from a human support agent.",
-            "justification": esc_reason, "request_type": esc_req_type,
-        }
-        finalize_trace(trace, result)
-        _append_trace_to_log(log_path, trace)
-        log_ticket(log_path, idx, ticket, "escalation_rules", result, lang)
-        return result
+    if enable_rules:
+        esc_area, esc_req_type, esc_reason = check_escalation_rules(issue)
+        add_stage(trace, "escalation_rules", {"matched": bool(esc_area), "rule": esc_reason})
+        if esc_area:
+            if verbose:
+                print(f"  [RULE]   {esc_reason}")
+            result = {
+                "status": "escalated", "product_area": esc_area,
+                "response": "This case requires attention from a human support agent.",
+                "justification": esc_reason, "request_type": esc_req_type,
+            }
+            finalize_trace(trace, result)
+            _append_trace_to_log(log_path, trace)
+            log_ticket(log_path, idx, ticket, "escalation_rules", result, lang)
+            return result, trace
+    else:
+        add_stage(trace, "escalation_rules", {"matched": False, "rule": "disabled"})
 
     # ── Stage 5: LLM call (attempt 1) ─────────────────────────────────────────
     if verbose:
@@ -356,8 +362,8 @@ def process_ticket(ticket, idx, docs, bm25, embeddings, log_path, verbose=False)
         )
 
     # ── Stage 6: Grounding check ───────────────────────────────────────────────
-    grounding_result = {"skipped": True, "reason": "not a replied+substantive ticket"}
-    if result.get("status") == "replied" and result.get("request_type") != "invalid":
+    grounding_result = {"skipped": True, "reason": "not a replied+substantive ticket or disabled"}
+    if enable_grounding and result.get("status") == "replied" and result.get("request_type") != "invalid":
         grounded, why = is_grounded(
             result.get("response", ""),
             retrieved,
@@ -422,6 +428,7 @@ def main():
     parser.add_argument("--input",    "-i", default="support_tickets/support_tickets.csv")
     parser.add_argument("--output",   "-o", default="support_tickets/output.csv")
     parser.add_argument("--data-dir",       default="data")
+    parser.add_argument("--config",         choices=["naive", "retrieval", "rules", "full"], default="full")
     parser.add_argument("--verbose",  "-v", action="store_true")
     args = parser.parse_args()
 
@@ -447,6 +454,10 @@ def main():
 
     cache = load_cache(args.output, tickets)
 
+    enable_retrieval = args.config in ["retrieval", "rules", "full"]
+    enable_rules = args.config in ["rules", "full"]
+    enable_grounding = args.config == "full"
+
     results         = []
     traces          = []
     replied_count   = 0
@@ -462,7 +473,9 @@ def main():
             print("CACHED")
         else:
             ret = process_ticket(ticket, i, docs, bm25, embeddings,
-                                 log_path, verbose=args.verbose)
+                                 log_path, enable_retrieval=enable_retrieval,
+                                 enable_rules=enable_rules, enable_grounding=enable_grounding,
+                                 verbose=args.verbose)
             # process_ticket now returns (result, trace)
             result, trace = ret if isinstance(ret, tuple) else (ret, {})
             results.append(result)

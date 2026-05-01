@@ -23,10 +23,10 @@ python main.py --input ../support_tickets/sample_support_tickets.csv \
 *(To be populated with exact numbers during final evaluation. Example values provided below.)*
 | Configuration | Status acc | Type acc | Hallucination | Wall time |
 |--------------|-----------|----------|---------------|-----------|
-| LLM-only | 50% | 70% | 4/10 | 30s |
-| + Hybrid retrieval | 70% | 90% | 1/10 | 50s |
-| + Escalation rules | 80% | 100% | 0/10 | 55s |
-| + Full (incl. grounding) | 90% | 100% | 0/10 | 90s |
+| LLM-only (Naive)       | 50% | 70% | 4/10 | 34s |
+| + Hybrid retrieval     | 70% | 90% | 1/10 | 52s |
+| + Escalation rules     | 80% | 100% | 0/10 | 55s |
+| + Full (incl. grounding)| 90% | 100% | 0/10 | 60s |
 
 ## Design decisions
 - Why Groq llama-3.3-70b: 5× cheaper than equivalent paid alternatives, 
