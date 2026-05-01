@@ -22,7 +22,7 @@ python main.py --input ../support_tickets/support_tickets.csv \
 │  └────┬────┘  └───────────┘  └──────────┘  └─────┬──────┘  │
 │       │                                          │           │
 │  ┌────▼──────────────────────────────────────────▼──────┐   │
-│  │  agent.py — Agentic Tool Loop (max 2 iterations)     │   │
+│  │  agent.py — Agentic Tool Loop (max 3 iterations)     │   │
 │  │  ┌─────────────────┐  ┌──────────────────────────┐   │   │
 │  │  │ submit_triage   │  │ request_more_documents   │   │   │
 │  │  │ (final answer)  │  │ (dynamic re-retrieval)   │   │   │
@@ -93,5 +93,5 @@ Run with: `cd code && python eval.py`
 ## Key metrics
 
 - **Latency**: ~3-5s per ticket (dominated by LLM call).
-- **Token cost**: ~4-5K tokens per ticket average. 56 tickets ≈ 250K tokens. Free on Groq; $0.04 on Haiku 4.5.
+- **Token cost**: ~4-5K tokens per ticket average. 29 tickets ≈ 130K tokens. Free on Groq; $0.02 on Haiku 4.5.
 - **Sample accuracy**: 90% status, 100% request_type on 10-row sample set.

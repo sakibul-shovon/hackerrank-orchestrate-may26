@@ -290,7 +290,7 @@ FULL_SYSTEM_PROMPT = SYSTEM_PROMPT + "\n\n" + FEW_SHOT
 
 
 # ── Main function ──────────────────────────────────────────────────────────────
-def call_llm(ticket: dict, retrieved_docs: list) -> dict:
+def call_llm(ticket: dict, retrieved_docs: list, force_submit: bool = False) -> dict:
     """
     Call Groq API and return a triage decision dict.
     Uses tool-use API for guaranteed structured output.
@@ -318,6 +318,9 @@ def call_llm(ticket: dict, retrieved_docs: list) -> dict:
     for attempt in range(MAX_RETRIES):
         try:
             client = _get_client()
+            available_tools = [TRIAGE_TOOL] if force_submit else [TRIAGE_TOOL, REQUEST_MORE_DOCS_TOOL]
+            tool_choice = {"type": "function", "function": {"name": "submit_triage"}} if force_submit else "auto"
+            
             response = client.chat.completions.create(
                 model=MODEL,
                 max_tokens=MAX_TOKENS,
@@ -326,8 +329,8 @@ def call_llm(ticket: dict, retrieved_docs: list) -> dict:
                     {"role": "system", "content": FULL_SYSTEM_PROMPT},
                     {"role": "user", "content": user_message}
                 ],
-                tools=[TRIAGE_TOOL, REQUEST_MORE_DOCS_TOOL],
-                tool_choice="auto",
+                tools=available_tools,
+                tool_choice=tool_choice,
             )
 
             # Extract tool call arguments
@@ -375,7 +378,7 @@ if __name__ == "__main__":
     ticket = {'issue': 'How do I reset my HackerRank password?', 'subject': '', 'company': 'hackerrank'}
     fake_docs = [{'product_area': 'account', 'title': 'Password Reset', 'text': 'To reset your password, go to the login page and click Forgot Password. Enter your email and follow the link sent to your inbox.'}]
 
-    ret = call_llm(ticket, fake_docs)
+    ret = call_llm(ticket, fake_docs, force_submit=False)
     print("Action:", ret.get("action"))
     result = ret.get("data", {})
     print('Status:', result.get('status'))

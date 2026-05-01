@@ -24,14 +24,29 @@ from config import (
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 
-_cached_client = None
+def _load_grounding_keys() -> list:
+    """Load all available Groq API keys for grounding checks."""
+    keys = []
+    primary = os.environ.get("GROQ_API_KEY", "")
+    if primary:
+        keys.append(primary)
+    for suffix in ["_2", "_3", "_4", "_5"]:
+        k = os.environ.get(f"GROQ_API_KEY{suffix}", "")
+        if k:
+            keys.append(k)
+    return keys if keys else [""]
+
+_GROUNDING_KEYS = _load_grounding_keys()
+_grounding_key_idx = 0
 
 def _get_client():
-    """Return a cached Groq client. Reads from env at first call."""
-    global _cached_client
-    if _cached_client is None:
-        _cached_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-    return _cached_client
+    """Return a Groq client using the current grounding key."""
+    return Groq(api_key=_GROUNDING_KEYS[_grounding_key_idx])
+
+def _rotate_grounding_key():
+    """Rotate to next available key for grounding checks."""
+    global _grounding_key_idx
+    _grounding_key_idx = (_grounding_key_idx + 1) % len(_GROUNDING_KEYS)
 
 
 # ── Citation verification (fast, no API call) ─────────────────────────────────
@@ -93,24 +108,28 @@ def _llm_grounding_check(response_text: str, retrieved_docs: list) -> tuple:
         f"Documents:\n{excerpts}"
     )
 
-    try:
-        client = _get_client()
-        msg = client.chat.completions.create(
-            model=GROUNDING_MODEL,
-            max_tokens=GROUNDING_MAX_TOKENS,
-            temperature=0,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-        )
-        raw = msg.choices[0].message.content.strip()
-        result = json.loads(raw)
-        grounded = bool(result.get("grounded", True))
-        reason   = str(result.get("reason", ""))
-        return grounded, reason
-    except Exception as e:
-        # Fail open — a verifier error should not escalate good tickets
-        print(f"  [WARN] LLM grounding check failed ({type(e).__name__}), skipping.")
-        return True, ""
+    for attempt in range(2):  # try up to 2 keys
+        try:
+            client = _get_client()
+            msg = client.chat.completions.create(
+                model=GROUNDING_MODEL,
+                max_tokens=GROUNDING_MAX_TOKENS,
+                temperature=0,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            )
+            raw = msg.choices[0].message.content.strip()
+            result = json.loads(raw)
+            grounded = bool(result.get("grounded", True))
+            reason   = str(result.get("reason", ""))
+            return grounded, reason
+        except Exception as e:
+            _rotate_grounding_key()
+            if attempt == 0:
+                continue  # retry with next key
+            # Fail open — a verifier error should not escalate good tickets
+            print(f"  [WARN] LLM grounding check failed ({type(e).__name__}), skipping.")
+            return True, ""
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

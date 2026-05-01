@@ -9,7 +9,7 @@ import re
 # Format: (regex_pattern, product_area, request_type, escalation_reason)
 ESCALATION_RULES = [
     (
-        r"identity\s+(stolen|theft|compromised)",
+        r"identity\s+(?:\w+\s+)*(stolen|theft|compromised)",
         "security", "product_issue",
         "Identity theft — requires human agent and potentially law enforcement"
     ),
@@ -24,7 +24,7 @@ ESCALATION_RULES = [
         "Platform-wide submission failure — requires engineering escalation"
     ),
     (
-        r"all\s+requests\s+are\s+failing",
+        r"all\s+(api\s+)?requests\s+are\s+failing",
         "platform", "bug",
         "Service outage detected — requires engineering escalation"
     ),
@@ -39,7 +39,7 @@ ESCALATION_RULES = [
         "Platform-wide page failure — requires engineering escalation"
     ),
     (
-        r"(stopped|stop)\s+working\s+completely",
+        r"(everything|entire\s+\w+)\s+(stopped|stop)\s+working",
         "platform", "bug",
         "Complete service failure — requires engineering escalation"
     ),
@@ -91,12 +91,13 @@ if __name__ == "__main__":
     tests = [
         ("My identity has been stolen",                              True),
         ("None of the submissions across any challenges are working", True),
-        ("Claude has stopped working completely",                     True),
+        ("Everything stopped working on the platform",                True),
         ("Please increase my score",                                  True),
         ("I had a payment issue with order ID: cs_live_abc123",       True),
         ("site is down & none of the pages are accessible",           True),
         ("How do I update my profile picture?",                       False),
         ("I can't find the certificate download button",              False),
+        ("Claude has stopped working completely",                     False),
     ]
 
     all_passed = True

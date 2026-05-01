@@ -29,8 +29,8 @@ RETRIEVAL_TOP_K_REFLECTION = 7  # top-K for reflection re-retrieval
 RETRIEVAL_AGENTIC_TOP_K = 3  # top-K per sub-query in agentic loop
 
 # ── Document Processing ──────────────────────────────────────────────────────
-DOC_TEXT_LIMIT_LLM = 800      # chars of doc text sent to LLM per doc
-DOC_TEXT_LIMIT_GROUNDING = 500  # chars of doc text for grounding check
+DOC_TEXT_LIMIT_LLM = 3000      # chars of doc text sent to LLM per doc
+DOC_TEXT_LIMIT_GROUNDING = 3000  # chars of doc text for grounding check
 DOC_HASH_KEY_LIMIT = 200      # chars of issue for hash-based resume key
 
 # ── Confidence Scoring ────────────────────────────────────────────────────────

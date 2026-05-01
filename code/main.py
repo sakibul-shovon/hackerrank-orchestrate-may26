@@ -31,7 +31,7 @@ from domain_inference  import infer_domain
 from product_areas     import normalize_product_area
 from confidence        import compute_confidence, REFLECTION_THRESHOLD, ESCALATION_THRESHOLD
 from reasoning_trace   import create_trace, add_stage, finalize_trace, format_trace_for_log, summarize_traces
-from config            import AGENTIC_MAX_ITERATIONS, INTER_TICKET_DELAY, CRASH_SAFE_INTERVAL, DOC_TEXT_LIMIT_LLM, RETRIEVAL_AGENTIC_TOP_K
+from config            import AGENTIC_MAX_ITERATIONS, INTER_TICKET_DELAY, CRASH_SAFE_INTERVAL, DOC_TEXT_LIMIT_LLM, RETRIEVAL_AGENTIC_TOP_K, LLM_MODEL
 
 
 # ── Configuration ──────────────────────────────────────────────────────────────
@@ -127,24 +127,6 @@ def write_output(path, tickets, results):
                 "response":      r["response"],
                 "request_type":  r["request_type"],
                 "justification": r["justification"],
-            })
-
-    # Also write Title Case version
-    titlecase_path = str(path).replace(".csv", "_titlecase.csv")
-    titlecase_fields = ["Issue", "Subject", "Company", "Response", "Product Area", "Status", "Request Type", "Justification"]
-    with open(titlecase_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=titlecase_fields, extrasaction="ignore")
-        w.writeheader()
-        for t, r in zip(tickets, results):
-            w.writerow({
-                "Issue":         t.get("issue", ""),
-                "Subject":       t.get("subject", ""),
-                "Company":       t.get("company", ""),
-                "Status":        r["status"],
-                "Product Area":  r["product_area"],
-                "Response":      r["response"],
-                "Request Type":  r["request_type"],
-                "Justification": r["justification"],
             })
 
 
@@ -295,7 +277,8 @@ def process_ticket(ticket, idx, docs, bm25, embeddings, log_path, enable_retriev
         if verbose:
             print(f"  LLM attempt {iteration}...")
             
-        llm_ret = call_llm({"issue": issue, "subject": subject, "company": company}, retrieved)
+        force_submit = (iteration == max_iterations)
+        llm_ret = call_llm({"issue": issue, "subject": subject, "company": company}, retrieved, force_submit=force_submit)
         action = llm_ret.get("action")
         result = llm_ret.get("data", {})
         
@@ -330,7 +313,7 @@ def process_ticket(ticket, idx, docs, bm25, embeddings, log_path, enable_retriev
         elif action == "submit_triage":
             add_stage(trace, f"llm_attempt_{iteration}", {
                 "action": "submit_triage",
-                "model": "llama-3.3-70b-versatile",
+                "model": LLM_MODEL,
                 "status": result.get("status"),
                 "confidence": result.get("confidence"),
             })

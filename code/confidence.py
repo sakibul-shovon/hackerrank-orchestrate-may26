@@ -79,7 +79,7 @@ def compute_confidence(
         else:
             # Fallback: >=70% of quote tokens appear in corpus (synced with grounding.py)
             qtoks = [t for t in normalised.split() if len(t) > 2]
-            if qtoks and sum(1 for t in qtoks if t in corpus_tokens) / len(qtoks) >= 0.7:
+            if qtoks and sum(1 for t in qtoks if t in corpus_tokens) / len(qtoks) >= CITATION_TOKEN_OVERLAP_THRESHOLD:
                 verified += 1
 
     # Citation score: if no citations provided, penalise slightly (0.4).

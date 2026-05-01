@@ -16,7 +16,7 @@ def main():
     print("Building index...")
     bm25, embeddings = build_index(docs)
     print("\n" + "="*50)
-    print("🤖 Interactive Support Triage Agent Ready!")
+    print(" Interactive Support Triage Agent Ready!")
     print("="*50 + "\n")
 
     log_path = Path.home() / "hackerrank_orchestrate" / "log.txt"
