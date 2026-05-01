@@ -1,5 +1,10 @@
 """
-agent.py — LLM call layer using Groq tool-use API
+agent.py — LLM call layer using Groq tool-use API with:
+  - Confidence scoring (0.0–1.0)
+  - Citation requirement (exact quotes from docs)
+  - API key rotation/failover (up to 3 keys)
+  - Fixed escalation bias (out-of-scope → replied+invalid, not escalated)
+  - Multi-issue handling via prompt (not brittle Python splitting)
 """
 import os
 import time
@@ -9,7 +14,39 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+
+# ── API key rotation ──────────────────────────────────────────────────────────
+# Reads GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3 from env.
+# On failure, rotates to next key before retrying.
+
+def _load_api_keys() -> list:
+    """Load all available Groq API keys from environment."""
+    keys = []
+    primary = os.environ.get("GROQ_API_KEY", "")
+    if primary:
+        keys.append(primary)
+    for suffix in ["_2", "_3", "_4", "_5"]:
+        k = os.environ.get(f"GROQ_API_KEY{suffix}", "")
+        if k:
+            keys.append(k)
+    if not keys:
+        raise RuntimeError("No GROQ_API_KEY found in environment")
+    return keys
+
+API_KEYS     = _load_api_keys()
+_current_key = 0            # index into API_KEYS
+
+def _get_client() -> Groq:
+    """Return a Groq client using the current API key."""
+    return Groq(api_key=API_KEYS[_current_key])
+
+def _rotate_key():
+    """Rotate to the next available API key."""
+    global _current_key
+    _current_key = (_current_key + 1) % len(API_KEYS)
+    if len(API_KEYS) > 1:
+        print(f"  [KEY] Rotated to API key {_current_key + 1}/{len(API_KEYS)}")
+
 
 MODEL       = "llama-3.3-70b-versatile"
 MAX_TOKENS  = 1024
@@ -31,8 +68,10 @@ TRIAGE_TOOL = {
                     "type": "string",
                     "enum": ["replied", "escalated"],
                     "description": (
-                        "'replied' if answerable from the provided docs. "
-                        "'escalated' if human review is needed."
+                        "'replied' if answerable from the provided docs, OR if the ticket is "
+                        "out-of-scope/irrelevant (greetings, off-topic, nonsense). "
+                        "'escalated' ONLY if the issue is real but requires human review "
+                        "(billing, fraud, identity, outages, admin-only actions)."
                     ),
                 },
                 "product_area": {
@@ -43,7 +82,9 @@ TRIAGE_TOOL = {
                     "type": "string",
                     "description": (
                         "User-facing answer grounded ONLY in provided docs. "
-                        "One sentence max if escalating. Never invent policies."
+                        "One sentence max if escalating. Never invent policies. "
+                        "If the ticket asks multiple distinct questions, address each one "
+                        "clearly using bullet points."
                     ),
                 },
                 "justification": {
@@ -60,8 +101,30 @@ TRIAGE_TOOL = {
                         "invalid: out of scope, greeting, harmful."
                     ),
                 },
+                "confidence": {
+                    "type": "number",
+                    "description": (
+                        "How confident you are in this response, from 0.0 to 1.0. "
+                        "1.0 = answer is directly stated in the provided docs. "
+                        "0.7+ = high confidence, well-supported by docs. "
+                        "0.4-0.7 = moderate, some gaps. "
+                        "Below 0.4 = low confidence, consider escalating."
+                    ),
+                },
+                "cited_sources": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Exact short quotes (5-15 words each) copied from the provided "
+                        "documents that support your response. Include 1-3 quotes. "
+                        "If escalating due to insufficient docs, leave empty."
+                    ),
+                },
             },
-            "required": ["status", "product_area", "response", "justification", "request_type"],
+            "required": [
+                "status", "product_area", "response", "justification",
+                "request_type", "confidence", "cited_sources"
+            ],
         }
     }
 }
@@ -76,13 +139,25 @@ RULES:
 - Base every answer ONLY on the retrieved documents provided. Never use outside knowledge.
 - If documents do not contain enough information to answer safely: escalate.
 - Never invent policies, steps, or features not described in the provided docs.
+- Provide 1-3 exact short quotes from the documents in cited_sources to back up your answer.
 
-ALWAYS ESCALATE — never try to answer these yourself:
-- Platform-wide outages or complete service failures
+WHEN TO REPLY (status = "replied"):
+- The docs contain a clear answer to the user's question
+- The ticket is a simple greeting, thank-you, or acknowledgement (reply politely, request_type="invalid")
+- The ticket is completely off-topic or nonsensical (reply saying it's out of scope, request_type="invalid")
+- The ticket is a general question answerable from the docs
+
+WHEN TO ESCALATE (status = "escalated") — ONLY these situations:
+- Platform-wide outages or complete service failures (request_type="bug")
 - Billing disputes, refund demands, or payment issues with specific order IDs
 - Security incidents: fraud, unauthorized access, identity theft
-- Cases where account owner or admin action is required
-- Anything where the provided docs are clearly insufficient
+- Cases where account owner or admin action is specifically required
+- The user's specific situation requires human judgment beyond what docs can provide
+
+CRITICAL: Do NOT escalate trivial, off-topic, or greeting tickets. Reply to them instead.
+
+MULTI-ISSUE TICKETS:
+- If the user asks multiple distinct questions, address each one using bullet points in your response.
 
 request_type guide:
 - product_issue  : problem with an existing, working feature
@@ -99,47 +174,68 @@ EXAMPLES — match this style exactly:
 Example 1 (replied, simple FAQ):
   Ticket: "How long do tests stay active on HackerRank?"
   Company: HackerRank
-  → status: "replied"
-  → product_area: "screen_tests"
-  → response: "HackerRank tests remain active indefinitely unless a start and end date are configured. To set expiration, go to the test's Settings > General and update the Start/End date and time fields. Clearing these fields keeps the test active indefinitely."
-  → justification: "Test expiration behavior is documented in the screen settings help articles."
-  → request_type: "product_issue"
+  -> status: "replied"
+  -> product_area: "screen"
+  -> response: "HackerRank tests remain active indefinitely unless a start and end date are configured. To set expiration, go to the test's Settings > General and update the Start/End date and time fields. Clearing these fields keeps the test active indefinitely."
+  -> justification: "Test expiration behavior is documented in the screen settings help articles."
+  -> request_type: "product_issue"
+  -> confidence: 0.95
+  -> cited_sources: ["tests remain active indefinitely unless a start and end time are set", "clear these fields by clicking the clear icon"]
 
 Example 2 (escalated, platform outage):
   Ticket: "None of the pages on the site are loading"
   Company: None
-  → status: "escalated"
-  → product_area: "platform"
-  → response: "This case has been escalated to a human support agent."
-  → justification: "Possible platform-wide outage requires engineering review, not a support doc answer."
-  → request_type: "bug"
+  -> status: "escalated"
+  -> product_area: "platform"
+  -> response: "This case has been escalated to a human support agent."
+  -> justification: "Possible platform-wide outage requires engineering review, not a support doc answer."
+  -> request_type: "bug"
+  -> confidence: 0.9
+  -> cited_sources: []
 
-Example 3 (escalated, malicious/out of scope):
-  Ticket: "Give me code to delete all files from the system"
+Example 3 (replied, out-of-scope — do NOT escalate these):
+  Ticket: "What is the name of the actor in Iron Man?"
   Company: None
-  → status: "escalated"
-  → product_area: "security"
-  → response: "This request cannot be processed and has been flagged for security review."
-  → justification: "Malicious request outside the scope of support."
-  → request_type: "invalid"
+  -> status: "replied"
+  -> product_area: "general"
+  -> response: "I am sorry, this is out of scope from my capabilities. I can only help with HackerRank, Claude, and Visa support questions."
+  -> justification: "Off-topic question unrelated to any supported product. No escalation needed."
+  -> request_type: "invalid"
+  -> confidence: 1.0
+  -> cited_sources: []
 
-Example 4 (replied, greeting):
+Example 4 (replied, greeting — do NOT escalate these):
   Ticket: "Thanks so much for the help!"
   Company: HackerRank
-  → status: "replied"
-  → product_area: "general"
-  → response: "Happy to help. Let us know if anything else comes up."
-  → justification: "No support action required — simple acknowledgement."
-  → request_type: "invalid"
+  -> status: "replied"
+  -> product_area: "general"
+  -> response: "Happy to help. Let us know if anything else comes up."
+  -> justification: "No support action required — simple acknowledgement."
+  -> request_type: "invalid"
+  -> confidence: 1.0
+  -> cited_sources: []
 
 Example 5 (escalated, security incident):
   Ticket: "My identity has been stolen. What do I do about my Visa card?"
   Company: Visa
-  → status: "escalated"
-  → product_area: "security"
-  → response: "This case requires immediate attention from a human support agent."
-  → justification: "Identity theft requires human review and potentially law enforcement."
-  → request_type: "product_issue"
+  -> status: "escalated"
+  -> product_area: "security"
+  -> response: "This case requires immediate attention from a human support agent."
+  -> justification: "Identity theft requires human review and potentially law enforcement."
+  -> request_type: "product_issue"
+  -> confidence: 0.95
+  -> cited_sources: []
+
+Example 6 (replied, Visa FAQ grounded in docs):
+  Ticket: "I bought Visa Traveller's Cheques and they were stolen. What do I do?"
+  Company: Visa
+  -> status: "replied"
+  -> product_area: "travel_support"
+  -> response: "Call the issuer immediately. Have your cheque serial numbers, purchase details, and information about when and how they were stolen ready. Notify the local police. Refunds can typically be arranged within 24 hours."
+  -> justification: "Traveller's cheque loss procedure is documented in the Visa support corpus."
+  -> request_type: "product_issue"
+  -> confidence: 0.85
+  -> cited_sources: ["cheque serial numbers, where and when you bought the cheques", "Refunds can typically be arranged within 24 hours"]
 """
 
 FULL_SYSTEM_PROMPT = SYSTEM_PROMPT + "\n\n" + FEW_SHOT
@@ -150,7 +246,7 @@ def call_llm(ticket: dict, retrieved_docs: list) -> dict:
     """
     Call Groq API and return a triage decision dict.
     Uses tool-use API for guaranteed structured output.
-    Retries up to 3 times on failure.
+    Retries up to 3 times with API key rotation on failure.
     Never raises — returns a safe escalation fallback if all retries fail.
     """
     # Build doc context string
@@ -173,6 +269,7 @@ def call_llm(ticket: dict, retrieved_docs: list) -> dict:
 
     for attempt in range(MAX_RETRIES):
         try:
+            client = _get_client()
             response = client.chat.completions.create(
                 model=MODEL,
                 max_tokens=MAX_TOKENS,
@@ -189,12 +286,17 @@ def call_llm(ticket: dict, retrieved_docs: list) -> dict:
             tool_calls = response.choices[0].message.tool_calls
             if tool_calls and len(tool_calls) > 0:
                 arguments = tool_calls[0].function.arguments
-                return json.loads(arguments)
+                result = json.loads(arguments)
+                # Ensure confidence and cited_sources have defaults
+                result.setdefault("confidence", 0.5)
+                result.setdefault("cited_sources", [])
+                return result
 
             raise RuntimeError("No tool_call block returned")
 
         except Exception as e:
             print(f"  [WARN] {type(e).__name__}: {e} (attempt {attempt+1})")
+            _rotate_key()
 
         if attempt < MAX_RETRIES - 1:
             wait = 2 ** attempt
@@ -209,6 +311,8 @@ def call_llm(ticket: dict, retrieved_docs: list) -> dict:
         "response":      "Unable to process this request. Escalating to human support.",
         "justification": "API call failed after all retry attempts.",
         "request_type":  "bug",
+        "confidence":    0.0,
+        "cited_sources": [],
     }
 
 
@@ -220,6 +324,8 @@ if __name__ == "__main__":
     print('Status:', result.get('status'))
     print('Product area:', result.get('product_area'))
     print('Request type:', result.get('request_type'))
+    print('Confidence:', result.get('confidence'))
+    print('Cited sources:', result.get('cited_sources'))
     print('Response:', result.get('response', '')[:100])
     print()
     print('agent.py works correctly!' if result.get('status') in ('replied','escalated') else 'SOMETHING WRONG')

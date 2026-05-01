@@ -1,5 +1,9 @@
 """
-main.py — Entry point. Full 6-stage triage pipeline.
+main.py — Entry point. Agentic triage pipeline with:
+  - Smart domain inference (when company=None)
+  - Multi-signal confidence scoring
+  - Product area normalization
+  - Self-reflection loop (Phase 2)
 
 Run:
     python code/main.py                           # default paths
@@ -17,12 +21,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from corpus           import load_corpus
-from safety           import check_safety, detect_language
-from retriever        import build_index, hybrid_retrieve
-from escalation_rules import check_escalation_rules
-from agent            import call_llm
-from grounding        import is_grounded
+from corpus            import load_corpus
+from safety            import check_safety, detect_language
+from retriever         import build_index, hybrid_retrieve
+from escalation_rules  import check_escalation_rules
+from agent             import call_llm
+from grounding         import is_grounded
+from domain_inference  import infer_domain
+from product_areas     import normalize_product_area
 
 
 # ── Configuration ──────────────────────────────────────────────────────────────
@@ -62,7 +68,7 @@ def log_session_start(path, input_path, output_path):
     _log(path, f"""
 ## [{ts}] SESSION START
 
-Agent: Antigravity
+Agent: support-triage-agent
 Repo: {Path(__file__).parent.parent.resolve()}
 Input: {input_path}
 Output: {output_path}
@@ -144,6 +150,10 @@ def load_cache(output_path, tickets):
     return cache
 
 
+# ── Confidence threshold ───────────────────────────────────────────────────────
+CONFIDENCE_ESCALATION_THRESHOLD = 0.4  # auto-escalate if below this
+
+
 # ── Process one ticket ─────────────────────────────────────────────────────────
 
 def process_ticket(ticket, idx, docs, bm25, embeddings, log_path, verbose=False):
@@ -173,33 +183,57 @@ def process_ticket(ticket, idx, docs, bm25, embeddings, log_path, verbose=False)
         log_ticket(log_path, idx, ticket, "safety_filter", result, lang)
         return result
 
-    # Stage 2+3: Domain route + Retrieve
+    # Stage 2: Domain routing + inference
     domain_filter = DOMAIN_MAP.get(company)
+    inferred_domain = None
+    if domain_filter is None:
+        # company is None/empty — try to infer from content
+        inferred_domain = infer_domain(issue, subject)
+        domain_filter = inferred_domain
+        if verbose and inferred_domain:
+            print(f"  Domain : {inferred_domain} (inferred from content)")
+        elif verbose:
+            print(f"  Domain : None (searching all domains)")
+
+    # Stage 3: Retrieve
     retrieved = hybrid_retrieve(query, docs, bm25, embeddings,
                                 domain_filter=domain_filter, top_k=5)
     if verbose:
         print(f"  Docs   : {[d['title'][:30] for d in retrieved]}")
 
-    # Stage 4: Escalation rules
-    esc_area, esc_reason = check_escalation_rules(issue)
+    # Stage 4: Escalation rules (deterministic)
+    esc_area, esc_req_type, esc_reason = check_escalation_rules(issue)
     if esc_area:
         if verbose:
             print(f"  [RULE]   {esc_reason}")
         result = {
             "status": "escalated", "product_area": esc_area,
             "response": "This case requires attention from a human support agent.",
-            "justification": esc_reason, "request_type": "product_issue",
+            "justification": esc_reason, "request_type": esc_req_type,
         }
         log_ticket(log_path, idx, ticket, "escalation_rules", result, lang)
         return result
 
-    # Stage 5: LLM
+    # Stage 5: LLM call
     if verbose:
         print(f"  Calling LLM...")
     result = call_llm({"issue": issue, "subject": subject, "company": company}, retrieved)
 
+    # Stage 5b: Confidence-based auto-escalation
+    confidence = result.get("confidence", 0.5)
+    if verbose:
+        print(f"  Confidence: {confidence:.2f}")
+    if confidence < CONFIDENCE_ESCALATION_THRESHOLD and result.get("status") == "replied":
+        if verbose:
+            print(f"  [LOW CONFIDENCE] {confidence:.2f} < {CONFIDENCE_ESCALATION_THRESHOLD} -> auto-escalating")
+        result["status"] = "escalated"
+        result["justification"] = (
+            f"Auto-escalated due to low confidence ({confidence:.2f}). "
+            + result.get("justification", "")
+        )
+
     # Stage 6: Grounding check (only for replied tickets)
-    if result.get("status") == "replied":
+    if result.get("status") == "replied" and result.get("request_type") != "invalid":
         grounded, why = is_grounded(result.get("response", ""), retrieved)
         if not grounded:
             if verbose:
@@ -212,7 +246,7 @@ def process_ticket(ticket, idx, docs, bm25, embeddings, log_path, verbose=False)
                 "request_type": "product_issue",
             }
 
-    # Stage 7: Validate
+    # Stage 7: Validate + normalize
     if result.get("status") not in VALID_STATUSES:
         result["status"] = "escalated"
     if result.get("request_type") not in VALID_REQUEST_TYPES:
@@ -224,8 +258,16 @@ def process_ticket(ticket, idx, docs, bm25, embeddings, log_path, verbose=False)
     if not result.get("justification"):
         result["justification"] = "Handled based on retrieved documentation."
 
+    # Normalize product_area to clean label
+    raw_area = result["product_area"]
+    result["product_area"] = normalize_product_area(
+        raw_area, domain=domain_filter or inferred_domain
+    )
+    if verbose and result["product_area"] != raw_area:
+        print(f"  Area   : {raw_area} -> {result['product_area']}")
+
     if verbose:
-        print(f"  → {result['status'].upper()} | {result['product_area']} | {result['request_type']}")
+        print(f"  -> {result['status'].upper()} | {result['product_area']} | {result['request_type']}")
 
     log_ticket(log_path, idx, ticket, "llm_call", result, lang)
     return result
@@ -294,7 +336,7 @@ def main():
     duration = time.time() - start
     log_session_end(log_path, len(tickets), replied_count, escalated_count, duration)
 
-    print(f"\n{'═'*50}")
+    print(f"\n{'='*50}")
     print(f"Done in {duration:.1f}s")
     print(f"  Replied   : {replied_count}")
     print(f"  Escalated : {escalated_count}")
