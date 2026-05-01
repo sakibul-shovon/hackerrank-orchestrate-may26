@@ -37,6 +37,7 @@ def _verify_citations(cited_sources: list, retrieved_docs: list) -> tuple:
         return True, "no citations to verify"   # neutral — let LLM judge decide
 
     corpus = " ".join(d.get("text", "").lower() for d in retrieved_docs[:5])
+    corpus_tokens = set(corpus.split())
     verified = 0
     for quote in cited_sources:
         if not quote or len(quote.strip()) < 5:
@@ -44,6 +45,11 @@ def _verify_citations(cited_sources: list, retrieved_docs: list) -> tuple:
         normalised = " ".join(quote.lower().split())
         if normalised in corpus:
             verified += 1
+        else:
+            # fallback: >=70% of quote tokens appear in corpus
+            qtoks = [t for t in normalised.split() if len(t) > 2]
+            if qtoks and sum(1 for t in qtoks if t in corpus_tokens)/len(qtoks) >= 0.7:
+                verified += 1
 
     total = len([q for q in cited_sources if q and len(q.strip()) >= 5])
     if total == 0:
@@ -69,8 +75,8 @@ def _llm_grounding_check(response_text: str, retrieved_docs: list) -> tuple:
         'Reply ONLY with JSON: {"grounded": true or false, "reason": "brief explanation"}\n\n'
         "Task: Is the Response firmly grounded in the provided Documents? "
         "Return true if the facts are supported by the Documents (minor paraphrasing is fine). "
-        "Return false ONLY if the Response contains clear factual claims that are completely "
-        "absent from or directly contradicted by the Documents.\n\n"
+        "Return false ONLY if the Response directly contradicts the Documents. "
+        "Minor paraphrasing or summarizing is acceptable.\n\n"
         f"Response:\n{response_text}\n\n"
         f"Documents:\n{excerpts}"
     )

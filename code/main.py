@@ -128,6 +128,24 @@ def write_output(path, tickets, results):
                 "justification": r["justification"],
             })
 
+    # Also write Title Case version
+    titlecase_path = str(path).replace(".csv", "_titlecase.csv")
+    titlecase_fields = ["Issue", "Subject", "Company", "Response", "Product Area", "Status", "Request Type", "Justification"]
+    with open(titlecase_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=titlecase_fields, extrasaction="ignore")
+        w.writeheader()
+        for t, r in zip(tickets, results):
+            w.writerow({
+                "Issue":         t.get("issue", ""),
+                "Subject":       t.get("subject", ""),
+                "Company":       t.get("company", ""),
+                "Status":        r["status"],
+                "Product Area":  r["product_area"],
+                "Response":      r["response"],
+                "Request Type":  r["request_type"],
+                "Justification": r["justification"],
+            })
+
 
 # ── Resume support ─────────────────────────────────────────────────────────────
 
@@ -167,9 +185,15 @@ def process_ticket(ticket, idx, docs, bm25, embeddings, log_path, verbose=False)
       Stage 6: Grounding check (citation + 70B LLM judge)
       Stage 7: Validate + normalize product_area
     """
-    issue   = ticket.get("issue", "")
-    subject = ticket.get("subject", "")
+    from redact import redact
+    issue   = redact(ticket.get("issue", ""))
+    subject = redact(ticket.get("subject", ""))
     company = ticket.get("company", "none").strip().lower()
+    
+    # Update ticket with redacted versions for downstream logging
+    ticket["issue"] = issue
+    ticket["subject"] = subject
+    
     query   = f"{subject} {issue}".strip()
 
     # Start reasoning trace
@@ -180,6 +204,17 @@ def process_ticket(ticket, idx, docs, bm25, embeddings, log_path, verbose=False)
         print(f"  Company: {company}")
 
     # ── Stage 1: Safety ────────────────────────────────────────────────────────
+    if not issue.strip():
+        result = {
+            "status": "escalated", "product_area": "general",
+            "response": "Please provide more details about your issue.",
+            "justification": "Empty or whitespace ticket.", "request_type": "invalid",
+        }
+        finalize_trace(trace, result)
+        _append_trace_to_log(log_path, trace)
+        log_ticket(log_path, idx, ticket, "safety_filter", result, "en")
+        return result
+
     threat, reason = check_safety(issue)
     lang = detect_language(issue)
     add_stage(trace, "safety", {"passed": not bool(threat), "language": lang, "threat": threat or None})
@@ -433,7 +468,7 @@ def main():
             results.append(result)
             traces.append(trace)
             print(f"{result['status'].upper()} [{result['request_type']}]")
-            time.sleep(2)  # 2 calls/ticket (main + grounding) — need more breathing room
+            time.sleep(0.3)  # reduced from 2s to 0.3s
 
         if result["status"] == "replied":
             replied_count += 1

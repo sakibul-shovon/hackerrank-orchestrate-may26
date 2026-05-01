@@ -4,7 +4,8 @@ safety.py — Pre-LLM safety filter
 import re
 
 try:
-    from langdetect import detect
+    from langdetect import detect, DetectorFactory
+    DetectorFactory.seed = 0
     LANGDETECT_AVAILABLE = True
 except ImportError:
     LANGDETECT_AVAILABLE = False
