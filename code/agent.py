@@ -9,10 +9,13 @@ agent.py — LLM call layer using Groq tool-use API with:
 import os
 import time
 import json
+from pathlib import Path
 from groq import Groq
 from dotenv import load_dotenv
 
-load_dotenv()
+# .env lives in code/ — find it relative to this file so it works
+# regardless of where the user runs python from
+load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 
 # ── API key rotation ──────────────────────────────────────────────────────────

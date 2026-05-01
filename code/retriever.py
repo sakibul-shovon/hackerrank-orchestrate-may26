@@ -1,5 +1,7 @@
 """
 retriever.py — Hybrid BM25 + dense embeddings + RRF retrieval
+Each returned doc includes a 'retrieval_score' field (RRF score)
+used by confidence.py for multi-signal scoring.
 """
 import os
 import pickle
@@ -52,7 +54,11 @@ def _build_and_cache(docs: list):
 
 def hybrid_retrieve(query, docs, bm25, embeddings,
                     domain_filter=None, top_k=5):
-    """Return top_k most relevant docs using hybrid BM25 + dense + RRF."""
+    """
+    Return top_k most relevant docs using hybrid BM25 + dense + RRF.
+    Each returned doc dict includes a 'retrieval_score' (RRF score)
+    used downstream by confidence.py.
+    """
     if domain_filter:
         indices = [i for i, d in enumerate(docs) if d["domain"] == domain_filter]
         if not indices:
@@ -84,4 +90,13 @@ def hybrid_retrieve(query, docs, bm25, embeddings,
 
     combined = rrf(bm25_scores) + rrf(cosine_scores)
     top_idx = np.argsort(-combined)[:top_k]
-    return [filtered_docs[i] for i in top_idx]
+
+    # Attach retrieval_score to each returned doc
+    results = []
+    for i in top_idx:
+        doc = dict(filtered_docs[i])          # copy so we don't mutate the original
+        doc["retrieval_score"] = float(combined[i])
+        results.append(doc)
+
+    return results
+
