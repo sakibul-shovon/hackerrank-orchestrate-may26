@@ -297,7 +297,8 @@ def call_llm(ticket: dict, retrieved_docs: list, force_submit: bool = False) -> 
     Retries up to 3 times with API key rotation on failure.
     Never raises — returns a safe escalation fallback if all retries fail.
     """
-    # Build doc context string
+    # Build doc context string — cap at 7 docs to stay within Groq free-tier TPM limits
+    capped_docs = retrieved_docs[:7]
     doc_context = "\n\n---\n\n".join([
         (
             f"[Doc {i+1}]\n"
@@ -305,7 +306,7 @@ def call_llm(ticket: dict, retrieved_docs: list, force_submit: bool = False) -> 
             f"Title: {doc['title']}\n\n"
             f"{doc['text'][:DOC_TEXT_LIMIT_LLM]}"
         )
-        for i, doc in enumerate(retrieved_docs)
+        for i, doc in enumerate(capped_docs)
     ])
 
     user_message = (
