@@ -8,18 +8,15 @@ Combines 3 signals to compute a final confidence score for each triage decision:
 
 This is used in main.py to decide whether to trigger the self-reflection loop.
 """
+from config import (
+    WEIGHT_LLM_CONFIDENCE, WEIGHT_RETRIEVAL_SCORE, WEIGHT_CITATION_MATCH,
+    REFLECTION_THRESHOLD, ESCALATION_THRESHOLD,
+    RRF_NORMALIZATION, CITATION_NO_CITE_PENALTY, CITATION_BAD_CITE_PENALTY,
+    CITATION_TOKEN_OVERLAP_THRESHOLD,
+)
 
-
-# ── Signal weights (must sum to 1.0) ─────────────────────────────────────────
-WEIGHT_LLM_CONFIDENCE  = 0.50   # LLM's self-assessment carries most weight
-WEIGHT_RETRIEVAL_SCORE = 0.25   # How relevant were the retrieved docs?
-WEIGHT_CITATION_MATCH  = 0.25   # Did the LLM actually quote from the docs?
-
-# If final confidence drops below this, trigger self-reflection
-REFLECTION_THRESHOLD = 0.55
-
-# If confidence is still below this after reflection, auto-escalate
-ESCALATION_THRESHOLD = 0.40
+# Signal weights and thresholds are imported from config.py
+# This keeps all tunable parameters in one place.
 
 
 def compute_confidence(
@@ -59,7 +56,7 @@ def compute_confidence(
         if top_score is not None:
             # Typical RRF top score is ~0.032 (60 docs filtered).
             # Normalise: 0.02 → 0.4, 0.03 → 0.7, 0.04+ → ~1.0
-            retrieval_score = min(1.0, top_score / 0.035)
+            retrieval_score = min(1.0, top_score / RRF_NORMALIZATION)
 
     # ── Signal 3: Citation verification ─────────────────────────────────────
     # Check if each cited quote actually appears somewhere in the retrieved docs.
@@ -68,6 +65,7 @@ def compute_confidence(
         d.get("text", "").lower() for d in retrieved_docs[:5]
     )
 
+    corpus_tokens = set(corpus_text.split())
     verified = 0
     total = len(cited_sources) if cited_sources else 0
 
@@ -78,13 +76,18 @@ def compute_confidence(
         normalised = " ".join(quote.lower().split())
         if normalised in corpus_text:
             verified += 1
+        else:
+            # Fallback: >=70% of quote tokens appear in corpus (synced with grounding.py)
+            qtoks = [t for t in normalised.split() if len(t) > 2]
+            if qtoks and sum(1 for t in qtoks if t in corpus_tokens) / len(qtoks) >= 0.7:
+                verified += 1
 
     # Citation score: if no citations provided, penalise slightly (0.4).
     # If all citations verified: 1.0. If none verified: 0.0.
     if total == 0:
-        citation_score = 0.4   # mild penalty: LLM didn't cite anything
+        citation_score = CITATION_NO_CITE_PENALTY
     elif verified == 0:
-        citation_score = 0.1   # strong penalty: cited things not in docs
+        citation_score = CITATION_BAD_CITE_PENALTY
     else:
         citation_score = verified / total
 

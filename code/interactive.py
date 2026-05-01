@@ -38,7 +38,7 @@ def main():
             }
 
             print("\nProcessing...")
-            result = process_ticket(ticket, idx=0, docs=docs, bm25=bm25, embeddings=embeddings, log_path=log_path, verbose=False)
+            result, trace = process_ticket(ticket, idx=0, docs=docs, bm25=bm25, embeddings=embeddings, log_path=log_path, verbose=False)
 
             print("\n" + "="*50)
             print(f"Status       : {result['status'].upper()}")

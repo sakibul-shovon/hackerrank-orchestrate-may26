@@ -8,9 +8,9 @@ import pickle
 import numpy as np
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
+from config import EMBEDDING_MODEL as _EMBEDDING_MODEL, EMBEDDING_CACHE_PATH, EMBEDDING_TEXT_LIMIT, RRF_K
 
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-CACHE_PATH = "code/.embeddings_cache.pkl"
+CACHE_PATH = EMBEDDING_CACHE_PATH
 
 _model = None
 
@@ -18,7 +18,7 @@ _model = None
 def _get_model():
     global _model
     if _model is None:
-        _model = SentenceTransformer(EMBEDDING_MODEL)
+        _model = SentenceTransformer(_EMBEDDING_MODEL)
     return _model
 
 
@@ -43,7 +43,7 @@ def build_index(docs: list):
 def _build_and_cache(docs: list):
     model = _get_model()
     print(f"  Building embeddings for {len(docs)} docs (~30 seconds)...")
-    texts = [doc["text"][:512] for doc in docs]
+    texts = [doc["text"][:EMBEDDING_TEXT_LIMIT] for doc in docs]
     embeddings = model.encode(texts, show_progress_bar=True, batch_size=64)
     os.makedirs(os.path.dirname(CACHE_PATH) or ".", exist_ok=True)
     with open(CACHE_PATH, "wb") as f:
@@ -81,7 +81,7 @@ def hybrid_retrieve(query, docs, bm25, embeddings,
     cosine_scores = np.dot(filtered_emb, q_emb) / norms
 
     # Reciprocal Rank Fusion
-    def rrf(scores, k=60):
+    def rrf(scores, k=RRF_K):
         ranks = np.argsort(-scores)
         out = np.zeros(len(scores))
         for pos, idx in enumerate(ranks):

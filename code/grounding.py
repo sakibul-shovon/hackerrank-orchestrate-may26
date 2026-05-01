@@ -1,10 +1,11 @@
 """
-grounding.py — Post-LLM grounding verifier using 70B model + citation check.
+grounding.py — Post-LLM grounding verifier using citation check + 8B LLM judge.
 
 Two-layer verification — BOTH must fail to trigger escalation:
   1. Citation check: verify cited_sources quotes exist in retrieved docs
-     (exact substring match — avoids lexical-overlap false positives)
-  2. 70B LLM-as-judge: checks for clear fabrications (not minor paraphrasing)
+     (exact substring + 70% token-overlap fallback)
+  2. 8B LLM-as-judge (llama-3.1-8b-instant): checks for clear fabrications
+     (not minor paraphrasing — lenient prompt)
 
 Requiring BOTH to fail prevents a single over-strict signal from over-escalating.
 Fail-open: if the verifier itself errors, trust the original response.
@@ -14,13 +15,23 @@ import os
 from pathlib import Path
 from groq import Groq
 from dotenv import load_dotenv
+from config import (
+    GROUNDING_MODEL, GROUNDING_MAX_TOKENS,
+    GROUNDING_DOCS_LIMIT, GROUNDING_CITATION_MIN_LEN, GROUNDING_CITATION_RATIO,
+    CITATION_TOKEN_OVERLAP_THRESHOLD, DOC_TEXT_LIMIT_GROUNDING,
+)
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 
+_cached_client = None
+
 def _get_client():
-    """Always read from env at call time so key rotation in agent.py is respected."""
-    return Groq(api_key=os.environ.get("GROQ_API_KEY"))
+    """Return a cached Groq client. Reads from env at first call."""
+    global _cached_client
+    if _cached_client is None:
+        _cached_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+    return _cached_client
 
 
 # ── Citation verification (fast, no API call) ─────────────────────────────────
@@ -36,11 +47,11 @@ def _verify_citations(cited_sources: list, retrieved_docs: list) -> tuple:
     if not cited_sources:
         return True, "no citations to verify"   # neutral — let LLM judge decide
 
-    corpus = " ".join(d.get("text", "").lower() for d in retrieved_docs[:5])
+    corpus = " ".join(d.get("text", "").lower() for d in retrieved_docs[:GROUNDING_DOCS_LIMIT])
     corpus_tokens = set(corpus.split())
     verified = 0
     for quote in cited_sources:
-        if not quote or len(quote.strip()) < 5:
+        if not quote or len(quote.strip()) < GROUNDING_CITATION_MIN_LEN:
             continue
         normalised = " ".join(quote.lower().split())
         if normalised in corpus:
@@ -48,28 +59,29 @@ def _verify_citations(cited_sources: list, retrieved_docs: list) -> tuple:
         else:
             # fallback: >=70% of quote tokens appear in corpus
             qtoks = [t for t in normalised.split() if len(t) > 2]
-            if qtoks and sum(1 for t in qtoks if t in corpus_tokens)/len(qtoks) >= 0.7:
+            if qtoks and sum(1 for t in qtoks if t in corpus_tokens)/len(qtoks) >= CITATION_TOKEN_OVERLAP_THRESHOLD:
                 verified += 1
 
-    total = len([q for q in cited_sources if q and len(q.strip()) >= 5])
+    total = len([q for q in cited_sources if q and len(q.strip()) >= GROUNDING_CITATION_MIN_LEN])
     if total == 0:
         return True, "no verifiable citations"
 
     ratio = verified / total
-    if ratio >= 0.5:
+    if ratio >= GROUNDING_CITATION_RATIO:
         return True, f"{verified}/{total} citations verified"
     else:
         return False, f"only {verified}/{total} cited quotes found in retrieved docs"
 
 
-# ── LLM-as-judge grounding check (70B model) ────────────────────────────────
+# ── LLM-as-judge grounding check (8B model — fast, separate quota) ───────────
 
 def _llm_grounding_check(response_text: str, retrieved_docs: list) -> tuple:
     """
-    Ask llama-3.3-70b-versatile to verify the response is grounded in docs.
+    Ask llama-3.1-8b-instant to verify the response is grounded in docs.
     Only flags CLEAR fabrications — minor paraphrasing is acceptable.
+    Uses 8B model for speed and to keep it on a separate quota from the main 70B.
     """
-    excerpts = "\n---\n".join(d["text"][:500] for d in retrieved_docs[:3])
+    excerpts = "\n---\n".join(d["text"][:DOC_TEXT_LIMIT_GROUNDING] for d in retrieved_docs[:3])
 
     prompt = (
         'Reply ONLY with JSON: {"grounded": true or false, "reason": "brief explanation"}\n\n'
@@ -84,8 +96,8 @@ def _llm_grounding_check(response_text: str, retrieved_docs: list) -> tuple:
     try:
         client = _get_client()
         msg = client.chat.completions.create(
-            model="llama-3.1-8b-instant",  # separate quota from 70B main call
-            max_tokens=100,
+            model=GROUNDING_MODEL,
+            max_tokens=GROUNDING_MAX_TOKENS,
             temperature=0,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
@@ -113,7 +125,7 @@ def is_grounded(
 
     This prevents a single over-strict signal from over-escalating.
     Layer 1: Citation check (fast, no API cost)
-    Layer 2: 70B LLM judge (lenient — flags clear fabrications only)
+    Layer 2: 8B LLM judge (lenient — flags clear fabrications only)
 
     Returns:
         (grounded: bool, reason: str)
@@ -126,7 +138,7 @@ def is_grounded(
     # Layer 1: Fast citation check
     cit_ok, cit_detail = _verify_citations(cited_sources or [], retrieved_docs)
 
-    # Layer 2: 70B LLM judge (lenient prompt)
+    # Layer 2: 8B LLM judge (lenient prompt)
     llm_ok, llm_reason = _llm_grounding_check(response_text, retrieved_docs)
 
     # Only escalate if BOTH layers independently flag a problem

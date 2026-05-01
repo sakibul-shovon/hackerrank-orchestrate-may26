@@ -31,6 +31,7 @@ from domain_inference  import infer_domain
 from product_areas     import normalize_product_area
 from confidence        import compute_confidence, REFLECTION_THRESHOLD, ESCALATION_THRESHOLD
 from reasoning_trace   import create_trace, add_stage, finalize_trace, format_trace_for_log, summarize_traces
+from config            import AGENTIC_MAX_ITERATIONS, INTER_TICKET_DELAY, CRASH_SAFE_INTERVAL, DOC_TEXT_LIMIT_LLM, RETRIEVAL_AGENTIC_TOP_K
 
 
 # ── Configuration ──────────────────────────────────────────────────────────────
@@ -210,10 +211,11 @@ def process_ticket(ticket, idx, docs, bm25, embeddings, log_path, enable_retriev
             "response": "Please provide more details about your issue.",
             "justification": "Empty or whitespace ticket.", "request_type": "invalid",
         }
+        add_stage(trace, "safety", {"passed": False, "reason": "empty_ticket"})
         finalize_trace(trace, result)
         _append_trace_to_log(log_path, trace)
         log_ticket(log_path, idx, ticket, "safety_filter", result, "en")
-        return result
+        return result, trace
 
     threat, reason = check_safety(issue)
     lang = detect_language(issue)
@@ -232,7 +234,7 @@ def process_ticket(ticket, idx, docs, bm25, embeddings, log_path, enable_retriev
         finalize_trace(trace, result)
         _append_trace_to_log(log_path, trace)
         log_ticket(log_path, idx, ticket, "safety_filter", result, lang)
-        return result
+        return result, trace
 
     # ── Stage 2: Domain routing + inference ────────────────────────────────────
     domain_filter = DOMAIN_MAP.get(company)
@@ -283,15 +285,69 @@ def process_ticket(ticket, idx, docs, bm25, embeddings, log_path, enable_retriev
     else:
         add_stage(trace, "escalation_rules", {"matched": False, "rule": "disabled"})
 
-    # ── Stage 5: LLM call (attempt 1) ─────────────────────────────────────────
-    if verbose:
-        print(f"  LLM attempt 1...")
-    result = call_llm({"issue": issue, "subject": subject, "company": company}, retrieved)
-    add_stage(trace, "llm_attempt_1", {
-        "model":      "llama-3.3-70b-versatile",
-        "status":     result.get("status"),
-        "confidence": result.get("confidence"),
-    })
+    # ── Stage 5: Agentic Tool Loop ────────────────────────────────────────────
+    max_iterations = AGENTIC_MAX_ITERATIONS
+    iteration = 0
+    llm_ret = {}
+    
+    while iteration < max_iterations:
+        iteration += 1
+        if verbose:
+            print(f"  LLM attempt {iteration}...")
+            
+        llm_ret = call_llm({"issue": issue, "subject": subject, "company": company}, retrieved)
+        action = llm_ret.get("action")
+        result = llm_ret.get("data", {})
+        
+        if action == "request_more_documents":
+            search_queries = result.get("search_queries", [])
+            reasoning = result.get("reasoning", "Need more context.")
+            if verbose:
+                print(f"  [AGENT] Requested more docs. Reasoning: {reasoning}")
+                print(f"  [AGENT] Queries: {search_queries}")
+            
+            add_stage(trace, f"llm_attempt_{iteration}", {
+                "action": "request_more_documents",
+                "reasoning": reasoning,
+                "queries": search_queries
+            })
+            
+            # Run new searches
+            new_retrieved = []
+            for q in search_queries:
+                new_retrieved.extend(hybrid_retrieve(q, docs, bm25, embeddings, domain_filter=domain_filter, top_k=RETRIEVAL_AGENTIC_TOP_K))
+            
+            # Combine and deduplicate based on title
+            seen_titles = {d["title"] for d in retrieved}
+            for d in new_retrieved:
+                if d["title"] not in seen_titles:
+                    retrieved.append(d)
+                    seen_titles.add(d["title"])
+            
+            if verbose:
+                print(f"  Total docs now in context: {len(retrieved)}")
+                
+        elif action == "submit_triage":
+            add_stage(trace, f"llm_attempt_{iteration}", {
+                "action": "submit_triage",
+                "model": "llama-3.3-70b-versatile",
+                "status": result.get("status"),
+                "confidence": result.get("confidence"),
+            })
+            break
+        else:
+            # Fallback
+            result = {"status": "escalated", "product_area": "general", "request_type": "bug", "response": "Error in tool selection.", "justification": "Fallback."}
+            break
+
+    # If we exited the loop without submitting triage
+    if llm_ret.get("action") != "submit_triage":
+        result = {
+            "status": "escalated", "product_area": "platform", "request_type": "bug",
+            "response": "Unable to process this request. Escalating to human support.",
+            "justification": "Agent reached max iterations without submitting triage.",
+            "confidence": 0.0
+        }
 
     # ── Stage 5b: Multi-signal confidence scoring ─────────────────────────────
     conf = compute_confidence(
@@ -302,54 +358,6 @@ def process_ticket(ticket, idx, docs, bm25, embeddings, log_path, enable_retriev
     add_stage(trace, "confidence", conf)
     if verbose:
         print(f"  Confidence: {conf['final']} (llm={conf['llm']}, ret={conf['retrieval']}, cit={conf['citation']})")
-
-    # ── Stage 5c: Self-reflection loop ────────────────────────────────────────
-    # If confidence is low AND we're about to reply (not already escalating),
-    # expand the query using keywords from the LLM response and try again.
-    reflected = False
-    reflect_reason = "confidence OK"
-
-    if conf["should_reflect"] and result.get("status") == "replied" and result.get("request_type") != "invalid":
-        if verbose:
-            print(f"  [REFLECT] confidence {conf['final']} < {REFLECTION_THRESHOLD} — re-retrieving...")
-        reflected = True
-        reflect_reason = f"confidence {conf['final']} below threshold {REFLECTION_THRESHOLD}"
-
-        # Expand query: add keywords from LLM's justification + product_area
-        extra_terms = f"{result.get('justification','')} {result.get('product_area','')}"
-        expanded_query = f"{query} {extra_terms}".strip()
-
-        retrieved2 = hybrid_retrieve(expanded_query, docs, bm25, embeddings,
-                                     domain_filter=domain_filter, top_k=7)
-        if verbose:
-            print(f"  Re-retrieved {len(retrieved2)} docs with expanded query")
-
-        result2 = call_llm({"issue": issue, "subject": subject, "company": company}, retrieved2)
-        conf2 = compute_confidence(
-            llm_confidence=result2.get("confidence", 0.5),
-            retrieved_docs=retrieved2,
-            cited_sources=result2.get("cited_sources", []),
-        )
-        if verbose:
-            print(f"  Attempt 2 confidence: {conf2['final']}")
-
-        add_stage(trace, "llm_attempt_2", {
-            "model":           "llama-3.3-70b-versatile",
-            "status":          result2.get("status"),
-            "confidence":      result2.get("confidence"),
-            "final_confidence": conf2["final"],
-        })
-
-        # Use attempt 2 if it improved confidence, otherwise keep attempt 1
-        if conf2["final"] >= conf["final"]:
-            result    = result2
-            retrieved = retrieved2
-            conf      = conf2
-        else:
-            if verbose:
-                print(f"  Attempt 2 worse — keeping attempt 1")
-
-    add_stage(trace, "reflection", {"triggered": reflected, "reason": reflect_reason})
 
     # ── Auto-escalate if still low confidence ─────────────────────────────────
     if conf["should_escalate"] and result.get("status") == "replied" and result.get("request_type") != "invalid":
@@ -472,16 +480,14 @@ def main():
             results.append(result)
             print("CACHED")
         else:
-            ret = process_ticket(ticket, i, docs, bm25, embeddings,
+            result, trace = process_ticket(ticket, i, docs, bm25, embeddings,
                                  log_path, enable_retrieval=enable_retrieval,
                                  enable_rules=enable_rules, enable_grounding=enable_grounding,
                                  verbose=args.verbose)
-            # process_ticket now returns (result, trace)
-            result, trace = ret if isinstance(ret, tuple) else (ret, {})
             results.append(result)
             traces.append(trace)
             print(f"{result['status'].upper()} [{result['request_type']}]")
-            time.sleep(0.3)  # reduced from 2s to 0.3s
+            time.sleep(INTER_TICKET_DELAY)
 
         if result["status"] == "replied":
             replied_count += 1
@@ -489,7 +495,7 @@ def main():
             escalated_count += 1
 
         # Write every 5 tickets (crash-safe)
-        if (i + 1) % 5 == 0 or i == len(tickets) - 1:
+        if (i + 1) % CRASH_SAFE_INTERVAL == 0 or i == len(tickets) - 1:
             write_output(args.output, tickets[:i+1], results)
 
     duration = time.time() - start

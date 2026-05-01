@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 from groq import Groq
 from dotenv import load_dotenv
+from config import LLM_MODEL, LLM_MAX_TOKENS, LLM_TEMPERATURE, LLM_MAX_RETRIES, DOC_TEXT_LIMIT_LLM
 
 # .env lives in code/ — find it relative to this file so it works
 # regardless of where the user runs python from
@@ -51,10 +52,10 @@ def _rotate_key():
         print(f"  [KEY] Rotated to API key {_current_key + 1}/{len(API_KEYS)}")
 
 
-MODEL       = "llama-3.3-70b-versatile"
-MAX_TOKENS  = 1024
-TEMPERATURE = 0          # deterministic: same input → same output
-MAX_RETRIES = 3
+MODEL       = LLM_MODEL
+MAX_TOKENS  = LLM_MAX_TOKENS
+TEMPERATURE = LLM_TEMPERATURE    # deterministic: same input → same output
+MAX_RETRIES = LLM_MAX_RETRIES
 
 
 # ── Tool schema ────────────────────────────────────────────────────────────────
@@ -132,15 +133,40 @@ TRIAGE_TOOL = {
     }
 }
 
+REQUEST_MORE_DOCS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "request_more_documents",
+        "description": "Call this when the provided documentation does not contain the answer, and you need to search the database using new, specific keywords.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "search_queries": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "A list of 1 to 3 targeted search queries to run against the knowledge base."
+                },
+                "reasoning": {
+                    "type": "string",
+                    "description": "Why the current docs are insufficient and what you hope to find."
+                }
+            },
+            "required": ["search_queries", "reasoning"]
+        }
+    }
+}
+
 
 # ── System prompt ──────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """You are a support triage agent for three products: HackerRank, Claude, and Visa.
 
-Read the support ticket and the retrieved documentation, then call submit_triage.
+Read the support ticket and the retrieved documentation, then select the appropriate tool.
 
 RULES:
 - Base every answer ONLY on the retrieved documents provided. Never use outside knowledge.
-- If documents do not contain enough information to answer safely: escalate.
+- If the documents lack the necessary info, use `request_more_documents` to run a new search.
+- Do not escalate simply because the first search failed. Try searching again first.
+- Only escalate if you have searched and still cannot answer, or if the ticket falls under the escalation rules below.
 - Never invent policies, steps, or features not described in the provided docs.
 - Provide 1-3 exact short quotes from the documents in cited_sources to back up your answer.
 
@@ -239,6 +265,25 @@ Example 6 (replied, Visa FAQ grounded in docs):
   -> request_type: "product_issue"
   -> confidence: 0.85
   -> cited_sources: ["cheque serial numbers, where and when you bought the cheques", "Refunds can typically be arranged within 24 hours"]
+
+Example 7 (needs more info):
+  Ticket: "How do I reset my API key?"
+  Company: HackerRank
+  [Documents provided do not mention API keys]
+  -> Action: call request_more_documents
+  -> search_queries: ["HackerRank reset API key", "generate new API key HackerRank"]
+  -> reasoning: "The current docs do not mention API keys, so I need to search for API key management."
+
+Example 8 (replied, feature request):
+  Ticket: "Can you add dark mode to the HackerRank test-taking interface?"
+  Company: HackerRank
+  -> status: "replied"
+  -> product_area: "screen"
+  -> response: "Dark mode is not currently available for the test-taking interface. I have noted this as a feature request. You may share this feedback through the HackerRank community or support channels."
+  -> justification: "The docs do not mention dark mode as an existing feature, so this is a request for new functionality."
+  -> request_type: "feature_request"
+  -> confidence: 0.9
+  -> cited_sources: []
 """
 
 FULL_SYSTEM_PROMPT = SYSTEM_PROMPT + "\n\n" + FEW_SHOT
@@ -258,7 +303,7 @@ def call_llm(ticket: dict, retrieved_docs: list) -> dict:
             f"[Doc {i+1}]\n"
             f"Category: {doc['product_area']}\n"
             f"Title: {doc['title']}\n\n"
-            f"{doc['text'][:800]}"
+            f"{doc['text'][:DOC_TEXT_LIMIT_LLM]}"
         )
         for i, doc in enumerate(retrieved_docs)
     ])
@@ -281,19 +326,23 @@ def call_llm(ticket: dict, retrieved_docs: list) -> dict:
                     {"role": "system", "content": FULL_SYSTEM_PROMPT},
                     {"role": "user", "content": user_message}
                 ],
-                tools=[TRIAGE_TOOL],
-                tool_choice={"type": "function", "function": {"name": "submit_triage"}},
+                tools=[TRIAGE_TOOL, REQUEST_MORE_DOCS_TOOL],
+                tool_choice="auto",
             )
 
             # Extract tool call arguments
             tool_calls = response.choices[0].message.tool_calls
             if tool_calls and len(tool_calls) > 0:
+                tool_name = tool_calls[0].function.name
                 arguments = tool_calls[0].function.arguments
                 result = json.loads(arguments)
-                # Ensure confidence and cited_sources have defaults
-                result.setdefault("confidence", 0.5)
-                result.setdefault("cited_sources", [])
-                return result
+                
+                if tool_name == "submit_triage":
+                    result.setdefault("confidence", 0.5)
+                    result.setdefault("cited_sources", [])
+                    return {"action": "submit_triage", "data": result}
+                elif tool_name == "request_more_documents":
+                    return {"action": "request_more_documents", "data": result}
 
             raise RuntimeError("No tool_call block returned")
 
@@ -309,13 +358,16 @@ def call_llm(ticket: dict, retrieved_docs: list) -> dict:
     # All retries failed — return safe fallback
     print("  [ERROR] All retries failed. Using fallback escalation.")
     return {
-        "status":        "escalated",
-        "product_area":  "platform",
-        "response":      "Unable to process this request. Escalating to human support.",
-        "justification": "API call failed after all retry attempts.",
-        "request_type":  "bug",
-        "confidence":    0.0,
-        "cited_sources": [],
+        "action": "submit_triage",
+        "data": {
+            "status":        "escalated",
+            "product_area":  "platform",
+            "response":      "Unable to process this request. Escalating to human support.",
+            "justification": "API call failed after all retry attempts.",
+            "request_type":  "bug",
+            "confidence":    0.0,
+            "cited_sources": [],
+        }
     }
 
 
@@ -323,7 +375,9 @@ if __name__ == "__main__":
     ticket = {'issue': 'How do I reset my HackerRank password?', 'subject': '', 'company': 'hackerrank'}
     fake_docs = [{'product_area': 'account', 'title': 'Password Reset', 'text': 'To reset your password, go to the login page and click Forgot Password. Enter your email and follow the link sent to your inbox.'}]
 
-    result = call_llm(ticket, fake_docs)
+    ret = call_llm(ticket, fake_docs)
+    print("Action:", ret.get("action"))
+    result = ret.get("data", {})
     print('Status:', result.get('status'))
     print('Product area:', result.get('product_area'))
     print('Request type:', result.get('request_type'))
