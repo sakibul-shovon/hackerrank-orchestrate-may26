@@ -17,30 +17,30 @@
 
 ---
 
-## 🏗️ System Architecture — Full Pipeline Graph
+##  System Architecture — Full Pipeline Graph
 
 ```mermaid
 flowchart TD
-    subgraph INPUT["📥 Input Layer"]
+    subgraph INPUT[" Input Layer"]
         CSV["support_tickets.csv\n(issue, subject, company)"]
-        REDACT["🔒 redact.py\nPII Redaction\n(cards, SSN, CVV, tokens, emails)"]
+        REDACT[" redact.py\nPII Redaction\n(cards, SSN, CVV, tokens, emails)"]
     end
 
-    subgraph STAGE1["🛡️ Stage 1 — Safety Gate"]
+    subgraph STAGE1[" Stage 1 — Safety Gate"]
         SAFETY["safety.py\nPre-LLM Filter"]
         INJ["Injection Detection\n(EN + FR + encoded)"]
         MAL["Malicious Request\nDetection"]
         LANG["Language Detection\n(langdetect, seeded)"]
     end
 
-    subgraph STAGE2["🧭 Stage 2 — Domain Routing"]
+    subgraph STAGE2[" Stage 2 — Domain Routing"]
         DOMAIN["domain_inference.py\nWeighted Keyword Scoring"]
         HR["HackerRank\n(test, assessment, candidate...)"]
         CL["Claude\n(anthropic, prompt, sonnet...)"]
         VI["Visa\n(card, payment, merchant...)"]
     end
 
-    subgraph STAGE3["🔍 Stage 3 — Hybrid Retrieval"]
+    subgraph STAGE3[" Stage 3 — Hybrid Retrieval"]
         RET["retriever.py"]
         BM25["BM25Okapi\n(exact term matching)"]
         DENSE["MiniLM-L6-v2\n(semantic embeddings)"]
@@ -48,7 +48,7 @@ flowchart TD
         CORPUS["770 docs from data/\n(hackerrank + claude + visa)"]
     end
 
-    subgraph STAGE4["⚠️ Stage 4 — Deterministic Escalation"]
+    subgraph STAGE4[" Stage 4 — Deterministic Escalation"]
         ESC["escalation_rules.py\n12 regex rules, first-match-wins"]
         ESC_ID["Identity theft / fraud"]
         ESC_OUT["Platform outages"]
@@ -56,7 +56,7 @@ flowchart TD
         ESC_SEC["Security incidents"]
     end
 
-    subgraph STAGE5["🧠 Stage 5 — Agentic Tool Loop"]
+    subgraph STAGE5[" Stage 5 — Agentic Tool Loop"]
         AGENT["agent.py\nGroq API (llama-3.3-70b)\ntemperature=0"]
         TOOLS["Dynamic Tool Selection"]
         SUBMIT["submit_triage\n(final structured answer)"]
@@ -64,7 +64,7 @@ flowchart TD
         LOOP["Max 3 iterations\nForce submit on final"]
     end
 
-    subgraph STAGE6["📊 Stage 5b — Confidence Scoring"]
+    subgraph STAGE6[" Stage 5b — Confidence Scoring"]
         CONF["confidence.py\nMulti-Signal Scoring"]
         SIG1["50% — LLM self-assessment"]
         SIG2["25% — Retrieval relevance\n(RRF score normalized)"]
@@ -72,20 +72,20 @@ flowchart TD
         THRESH["Reflect < 0.45\nEscalate < 0.25"]
     end
 
-    subgraph STAGE7["✅ Stage 6 — Grounding Verification"]
+    subgraph STAGE7[" Stage 6 — Grounding Verification"]
         GROUND["grounding.py\nTwo-Layer AND-Fail Gate"]
         CITE["Layer 1: Citation Check\n(exact substring + 70% token overlap)"]
         JUDGE["Layer 2: LLM-as-Judge\n(llama-3.1-8b-instant)\nFlags clear fabrications only"]
         ANDFAIL["BOTH must fail → escalate\nSingle fail → trust response"]
     end
 
-    subgraph STAGE8["📦 Stage 7 — Normalize & Output"]
+    subgraph STAGE8[" Stage 7 — Normalize & Output"]
         NORM["product_areas.py\nProduct Area Normalization"]
         VALID["Validate status ∈ {replied, escalated}\nValidate request_type ∈ {product_issue,\nfeature_request, bug, invalid}"]
         OUT["output.csv\nCrash-safe writes every 5 rows"]
     end
 
-    subgraph OPS["⚙️ Operational Layer"]
+    subgraph OPS[" Operational Layer"]
         CONFIG["config.py\nAll 25+ tunable parameters"]
         TRACE["reasoning_trace.py\n8-stage audit trail per ticket"]
         KEYS["API Key Rotation\n(up to 5 GROQ_API_KEY_N)\nExponential backoff"]
@@ -94,7 +94,7 @@ flowchart TD
 
     CSV --> REDACT --> SAFETY
     SAFETY --> INJ & MAL & LANG
-    INJ -->|"threat detected"| BLOCKED["🚫 Escalate\n(security)"]
+    INJ -->|"threat detected"| BLOCKED[" Escalate\n(security)"]
     MAL -->|"threat detected"| BLOCKED
     SAFETY -->|"safe ✓"| DOMAIN
 
@@ -148,7 +148,7 @@ flowchart TD
 
 ---
 
-## 🎯 What It Does
+##  What It Does
 
 For every row in `support_tickets.csv`, the agent produces:
 
@@ -162,7 +162,7 @@ For every row in `support_tickets.csv`, the agent produces:
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
 # 1. Clone & enter
@@ -187,7 +187,7 @@ python main.py --input ../support_tickets/support_tickets.csv \
 
 ---
 
-## 📁 Repository Layout
+##  Repository Layout
 
 ```
 .
@@ -196,7 +196,7 @@ python main.py --input ../support_tickets/support_tickets.csv \
 ├── problem_statement.md               # Full task spec & I/O schema
 ├── evalutation_criteria.md            # Scoring rubric
 │
-├── code/                              # 🧠 All agent source code
+├── code/                              #   All agent source code
 │   ├── main.py                        #   Orchestrator — 7-stage pipeline + crash-safe writes
 │   ├── agent.py                       #   LLM layer — Groq tool-use with key rotation
 │   ├── safety.py                      #   Pre-LLM injection & malicious request filter
@@ -215,7 +215,7 @@ python main.py --input ../support_tickets/support_tickets.csv \
 │   ├── requirements.txt               #   Pinned dependencies
 │   └── .env.example                   #   Environment variable template
 │
-├── data/                              # 📚 Support corpus (770 documents)
+├── data/                              #   Support corpus (770 documents)
 │   ├── hackerrank/                    #   HackerRank help center export
 │   ├── claude/                        #   Claude/Anthropic help center export
 │   └── visa/                          #   Visa consumer & small-business support
@@ -230,7 +230,7 @@ python main.py --input ../support_tickets/support_tickets.csv \
 
 ## 🔬 The 7 Stages — Deep Dive
 
-### Stage 1 · 🛡️ Safety Gate — `safety.py`
+### Stage 1 ·  Safety Gate — `safety.py`
 
 **Purpose:** Block prompt injections and malicious requests **before** any API token is spent.
 
@@ -245,7 +245,7 @@ python main.py --input ../support_tickets/support_tickets.csv \
 
 ---
 
-### Stage 2 · 🧭 Domain Routing — `domain_inference.py`
+### Stage 2 ·  Domain Routing — `domain_inference.py`
 
 **Purpose:** When `company=None`, infer the correct product domain from ticket content.
 
@@ -260,7 +260,7 @@ python main.py --input ../support_tickets/support_tickets.csv \
 
 ---
 
-### Stage 3 · 🔍 Hybrid Retrieval — `retriever.py`
+### Stage 3 ·  Hybrid Retrieval — `retriever.py`
 
 **Purpose:** Find the most relevant support documents using two complementary search strategies.
 
@@ -392,7 +392,7 @@ flowchart LR
 
 ---
 
-### Stage 7 · 📦 Normalize & Output — `product_areas.py` + `main.py`
+### Stage 7 ·  Normalize & Output — `product_areas.py` + `main.py`
 
 | Feature | Detail |
 |---------|--------|
@@ -405,7 +405,7 @@ flowchart LR
 
 ---
 
-## 🔐 Security & Privacy — `redact.py`
+##  Security & Privacy — `redact.py`
 
 All PII is redacted **before** it reaches the LLM or any log file:
 
@@ -420,7 +420,7 @@ All PII is redacted **before** it reaches the LLM or any log file:
 
 ---
 
-## 📊 Ablation Study Results
+## Ablation Study Results
 
 Run with `cd code && python eval.py` on the 10-row sample set:
 
@@ -435,7 +435,7 @@ Run with `cd code && python eval.py` on the 10-row sample set:
 
 ---
 
-## 🧩 Key Design Decisions
+##  Key Design Decisions
 
 | Decision | Rationale |
 |----------|-----------|
@@ -452,7 +452,7 @@ Run with `cd code && python eval.py` on the 10-row sample set:
 
 ---
 
-## ⚙️ Operational Features
+##  Operational Features
 
 | Feature | Implementation |
 |---------|----------------|
@@ -465,7 +465,7 @@ Run with `cd code && python eval.py` on the 10-row sample set:
 
 ---
 
-## 📈 Performance
+##  Performance
 
 | Metric | Value |
 |--------|-------|
@@ -477,7 +477,7 @@ Run with `cd code && python eval.py` on the 10-row sample set:
 
 ---
 
-## 🔧 Dependencies
+##  Dependencies
 
 ```
 groq==0.5.0
@@ -491,7 +491,7 @@ python-dotenv==1.0.1
 
 ---
 
-## 🏆 Known Limitations (Honest Assessment)
+##  Known Limitations (Honest Assessment)
 
 | Limitation | Impact | Potential Fix |
 |------------|--------|---------------|
@@ -503,7 +503,7 @@ python-dotenv==1.0.1
 
 ---
 
-## 📝 Submission Artifacts
+##  Submission Artifacts
 
 | Artifact | Path |
 |----------|------|
