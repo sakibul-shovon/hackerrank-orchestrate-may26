@@ -166,7 +166,7 @@ For every row in `support_tickets.csv`, the agent produces:
 
 ```bash
 # 1. Clone & enter
-git clone <repo-url>
+git clone https://github.com/sakibul-shovon/hackerrank-orchestrate-may26.git
 cd hackerrank-orchestrate-may26
 
 # 2. Set up Python environment
@@ -228,7 +228,7 @@ python main.py --input ../support_tickets/support_tickets.csv \
 
 ---
 
-## 🔬 The 7 Stages — Deep Dive
+##  The 7 Stages — Deep Dive
 
 ### Stage 1 ·  Safety Gate — `safety.py`
 
