@@ -12,7 +12,8 @@ from main import process_ticket
 
 def main():
     print("Loading corpus...")
-    docs = load_corpus("data")
+    data_dir = Path(__file__).parent.parent / "data"
+    docs = load_corpus(str(data_dir))
     print("Building index...")
     bm25, embeddings = build_index(docs)
     print("\n" + "="*50)

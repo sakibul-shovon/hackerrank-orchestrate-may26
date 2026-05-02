@@ -419,9 +419,12 @@ def _append_trace_to_log(log_path: str, trace: dict):
 
 def main():
     parser = argparse.ArgumentParser(description="Support Triage Agent")
-    parser.add_argument("--input",    "-i", default="support_tickets/support_tickets.csv")
-    parser.add_argument("--output",   "-o", default="support_tickets/output.csv")
-    parser.add_argument("--data-dir",       default="data")
+    
+    base_dir = Path(__file__).parent.parent
+    
+    parser.add_argument("--input",    "-i", default=str(base_dir / "support_tickets" / "support_tickets.csv"))
+    parser.add_argument("--output",   "-o", default=str(base_dir / "support_tickets" / "output.csv"))
+    parser.add_argument("--data-dir",       default=str(base_dir / "data"))
     parser.add_argument("--config",         choices=["naive", "retrieval", "rules", "full"], default="full")
     parser.add_argument("--verbose",  "-v", action="store_true")
     args = parser.parse_args()
