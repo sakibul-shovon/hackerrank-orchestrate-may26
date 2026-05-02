@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/RAG-Hybrid_BM25+Dense-8B5CF6?style=for-the-badge" />
 </p>
 
-<h1 align="center">🤖 Support Triage Agent</h1>
+<h1 align="center"> Support Triage Agent</h1>
 
 <p align="center">
   <strong>An autonomous, 7-stage agentic pipeline that resolves real support tickets across HackerRank, Claude, and Visa ecosystems — with zero hallucination tolerance.</strong>
