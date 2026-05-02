@@ -29,7 +29,7 @@ flowchart TD
 
     subgraph OUTPUT["📤 OUTPUT"]
         OUT["output.csv\n(status, product_area,\nresponse, justification,\nrequest_type)"]
-        LOG["log.txt\n(reasoning traces)"]
+        LOG["agent_reasoning_trace.log\n(reasoning traces)"]
     end
 
     CSV --> PARSE

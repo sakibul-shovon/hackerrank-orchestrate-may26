@@ -19,7 +19,7 @@ def main():
     print(" Interactive Support Triage Agent Ready!")
     print("="*50 + "\n")
 
-    log_path = Path.home() / "hackerrank_orchestrate" / "log.txt"
+    log_path = Path.home() / "hackerrank_orchestrate" / "agent_reasoning_trace.log"
 
     while True:
         try:

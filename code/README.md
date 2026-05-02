@@ -87,7 +87,7 @@ Run with: `cd code && python eval.py`
 - **Crash-safe**: writes every 5 rows to disk + content-hash resume on restart.
 - **API failover**: rotates across up to 5 `GROQ_API_KEY_N` environment variables with exponential backoff.
 - **PII redaction**: card numbers, SSNs, CVVs, tokens, emails, API keys redacted before LLM and before log.
-- **Reasoning trace**: every ticket decision produces an 8-stage audit trail in `~/hackerrank_orchestrate/log.txt`.
+- **Reasoning trace**: every ticket decision produces an 8-stage audit trail in `~/hackerrank_orchestrate/agent_reasoning_trace.log`.
 - **Determinism**: `temperature=0`, `DetectorFactory.seed=0`, pinned dependencies.
 
 ## Key metrics

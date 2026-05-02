@@ -58,7 +58,7 @@ VALID_REQUEST_TYPES = {"product_issue", "feature_request", "bug", "invalid"}
 def get_log_path() -> Path:
     log_dir = Path.home() / "hackerrank_orchestrate"
     log_dir.mkdir(parents=True, exist_ok=True)
-    return log_dir / "log.txt"
+    return log_dir / "agent_reasoning_trace.log"
 
 
 def _log(path: Path, content: str):
@@ -119,9 +119,9 @@ def write_output(path, tickets, results):
         w.writeheader()
         for t, r in zip(tickets, results):
             w.writerow({
-                "issue":         t.get("issue", ""),
-                "subject":       t.get("subject", ""),
-                "company":       t.get("company", ""),
+                "issue":         str(t.get("issue") or ""),
+                "subject":       str(t.get("subject") or ""),
+                "company":       str(t.get("company") or ""),
                 "status":        r["status"],
                 "product_area":  r["product_area"],
                 "response":      r["response"],
@@ -133,7 +133,10 @@ def write_output(path, tickets, results):
 # ── Resume support ─────────────────────────────────────────────────────────────
 
 def _hash(ticket):
-    key = f"{ticket.get('issue','')[:200]}|{ticket.get('subject','')[:100]}|{ticket.get('company','')}"
+    issue = str(ticket.get('issue') or "")[:200]
+    subject = str(ticket.get('subject') or "")[:100]
+    company = str(ticket.get('company') or "")
+    key = f"{issue}|{subject}|{company}"
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
@@ -144,8 +147,8 @@ def load_cache(output_path, tickets):
     try:
         with open(output_path, newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
-                h = _hash({"issue": row.get("issue",""), "subject": row.get("subject",""), "company": row.get("company","")})
-                cache[h] = {k: row.get(k,"") for k in ["status","product_area","response","request_type","justification"]}
+                h = _hash({"issue": str(row.get("issue") or ""), "subject": str(row.get("subject") or ""), "company": str(row.get("company") or "")})
+                cache[h] = {k: str(row.get(k) or "") for k in ["status","product_area","response","request_type","justification"]}
         if cache:
             print(f"Resume: {len(cache)} previously processed tickets found.")
     except Exception:
@@ -169,9 +172,9 @@ def process_ticket(ticket, idx, docs, bm25, embeddings, log_path, enable_retriev
       Stage 7: Validate + normalize product_area
     """
     from redact import redact
-    issue   = redact(ticket.get("issue", ""))
-    subject = redact(ticket.get("subject", ""))
-    company = ticket.get("company", "none").strip().lower()
+    issue   = redact(str(ticket.get("issue") or ""))
+    subject = redact(str(ticket.get("subject") or ""))
+    company = str(ticket.get("company") or "none").strip().lower()
     
     # Update ticket with redacted versions for downstream logging
     ticket["issue"] = issue
